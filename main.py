@@ -1,7 +1,6 @@
 import exifread
-from PyQt5.QtGui import QPixmap, QPainter
-from PyQt5.QtWidgets import QMainWindow, QApplication, QVBoxLayout, QFileDialog, QWidget, QLabel, QSizePolicy, \
-    QTableWidget
+from PyQt5.QtGui import QPixmap, QPainter, QIcon
+from PyQt5.QtWidgets import QMainWindow, QApplication, QFileDialog, QWidget, QTableWidget
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5 import uic
 from PyQt5.QtCore import Qt
@@ -14,71 +13,89 @@ import os
 
 
 class Images:
-    """Класс для доступа к базе фотографий"""
+    """Класс для доступа к базе изображений"""
 
     def __init__(self):
         self.con = sqlite3.connect('images_db.sqlite')
+        cur = self.con.cursor()
+        tables = cur.execute('''SELECT name FROM sqlite_schema
+                            WHERE type ='table' AND name NOT LIKE 'sqlite_%';''').fetchone()
+        if tables is None or 'images' not in tables:
+            print('creating new table')
+            cur.execute('''CREATE TABLE images (
+                            id         INTEGER PRIMARY KEY AUTOINCREMENT
+                               NOT NULL
+                               UNIQUE,
+                            full_image TEXT,
+                            icon       TEXT,
+                            latitude   REAL,
+                            longitude  REAL
+                            )''')
+            self.con.commit()
+
         self.directory = os.path.dirname(os.path.abspath(sys.argv[0]))
 
     def add_image(self, image_path):
-        try:
-            cur = self.con.cursor()
-            cur.execute('INSERT INTO images(full_image) VALUES("temp")')
-            self.con.commit()
-            img_id = cur.lastrowid
-            print(img_id)
-            ext = image_path[image_path.rfind('.'):]
-            new_image_path = os.path.join(self.directory, 'images', str(img_id) + ext)
-            icon_path = os.path.join(self.directory, 'icons', str(img_id) + ext)
-            with PilImage.open(image_path) as img:
-                img = ImageOps.exif_transpose(img)
-                icon_img = img.resize((100, 100))
-                img.save(new_image_path)
-                icon_img.save(icon_path)
+        """Обрабатывает добавление изобрадения в базу и создание иконки для карты"""
 
-            latitude, longitude = self.get_image_location(image_path)
+        cur = self.con.cursor()
+        cur.execute('INSERT INTO images(full_image) VALUES("temp")')
+        self.con.commit()
+        img_id = cur.lastrowid
+        print(img_id)
+        ext = image_path[image_path.rfind('.'):]
+        new_image_path = os.path.join(self.directory, 'images', str(img_id) + ext)
+        icon_path = os.path.join(self.directory, 'icons', str(img_id) + ext)
+        with PilImage.open(image_path) as img:
+            img = ImageOps.exif_transpose(img)
+            icon_img = img.resize((100, 100))
+            img.save(new_image_path)
+            icon_img.save(icon_path)
 
-            cur = self.con.cursor()
-            cur.execute('''UPDATE images
-                            SET full_image = ?, icon = ?, LATITUDE = ?, longitude = ?
-                            WHERE id = ?''',
-                        (new_image_path, icon_path, latitude, longitude, img_id))
+        latitude, longitude = self.get_image_location(image_path)
 
-            self.con.commit()
-            if cur.lastrowid != img_id:
-                raise ValueError('НЕ РАБОТАЕТ АЛЛО АЛЛР')
-            return cur.lastrowid, new_image_path, icon_path, latitude, longitude
-        except Exception as err:
-            print(err.__repr__())
+        cur = self.con.cursor()
+        cur.execute('''UPDATE images
+                        SET full_image = ?, icon = ?, LATITUDE = ?, longitude = ?
+                        WHERE id = ?''',
+                    (new_image_path, icon_path, latitude, longitude, img_id))
+
+        self.con.commit()
+        return cur.lastrowid, new_image_path, icon_path, latitude, longitude
 
     def delete_image(self, img_id):
-        try:
-            cur = self.con.cursor()
-            img_path, icon_path = cur.execute(f'''SELECT full_image, icon FROM images
-                                              WHERE id = ?''', (img_id,)).fetchone()
-            os.remove(img_path)
-            os.remove(icon_path)
-            cur.execute(f'''DELETE FROM images
-                            WHERE id = ?''', (img_id,))
-            self.con.commit()
-        except Exception as err:
-            print(err.__repr__())
+        """Обрабатывает удаление изображения"""
+
+        cur = self.con.cursor()
+        img_path, icon_path = cur.execute(f'''SELECT full_image, icon FROM images
+                                          WHERE id = ?''', (img_id,)).fetchone()
+        os.remove(img_path)
+        os.remove(icon_path)
+        cur.execute(f'''DELETE FROM images
+                        WHERE id = ?''', (img_id,))
+        self.con.commit()
 
     def get_images(self):
+        """Возвращает список параметров всех изображений"""
+
         cur = self.con.cursor()
         images = cur.execute('SELECT * FROM images').fetchall()
         return images
 
     def get_image_info(self, img_id):
+        """Возвращает параметры одного изображения"""
+
         cur = self.con.cursor()
         res = cur.execute('''SELECT * FROM images
                             WHERE id = ?''', (img_id,)).fetchall()[0]
         return res
 
     def get_image_location(self, image_path):
-        """Возвращает координаты локации фотографии"""
+        """Возвращает координаты локации изображения"""
 
         def convert_latitude(latitude_ref, latitude_data):
+            """Конвертирует широту в десятичные градусы"""
+
             latitude = [float(i) for i in latitude_data.values]
             res = latitude[0] + latitude[1] / 60 + latitude[2] / 3600
             if latitude_ref.values[0] == 'S':
@@ -86,6 +103,8 @@ class Images:
             return res
 
         def convert_longitude(longitude_ref, longitude_data):
+            """Конвертирует долготу в десятичные градусы"""
+
             longitude = [float(i) for i in longitude_data.values]
             res = longitude[0] + longitude[1] / 60 + longitude[2] / 3600
             if longitude_ref.values[0] == 'W':
@@ -99,10 +118,12 @@ class Images:
                 longitude = convert_longitude(image_data['GPS GPSLongitudeRef'], image_data['GPS GPSLongitude'])
             except KeyError:
                 print(f"Image '{image_path}' does not have coordinates")
-                return None
+                return None, None
         return latitude, longitude
 
     def clear(self):
+        """Очищает базу данных"""
+
         cur = self.con.cursor()
         cur.execute('DELETE FROM images')
         self.con.commit()
@@ -121,6 +142,8 @@ class ImageWidget(QWidget):
         painter.drawPixmap(0, 0, self.image)
 
     def update_image(self):
+        """При вызове обновляет собственное изображение на актуальное"""
+
         self.image = QPixmap(self.path)
         if self.resolution is not None:
             self.image = self.image.scaled(*self.resolution, Qt.KeepAspectRatioByExpanding)
@@ -128,17 +151,23 @@ class ImageWidget(QWidget):
 
 
 class ImageWindow(QMainWindow):
-    def __init__(self, image_id, row, col, main_window):
+    def __init__(self, image_id, index, main_window):
         super(ImageWindow, self).__init__()
         uic.loadUi('image.ui', self)
         self.resize(800, 1000)
         self.id = image_id
         self.main = main_window
-        self.row = row
-        self.col = col
-        self.info = main_window.images.get_image_info(self.id)
+        self.index = index
+        print(self.main)
+        self.info = self.main.images.get_image_info(self.id)
         self.image_widget = ImageWidget(self.id, self.info[1], (700, 700), parent=self)
         self.mainLayout.addWidget(self.image_widget)
+
+        self.directory = os.path.dirname(os.path.abspath(sys.argv[0]))
+        clockwise_icon = QIcon(os.path.join(self.directory, 'buttons', 'clockwise.png'))
+        counterclockwise_icon = QIcon(os.path.join(self.directory, 'buttons', 'counterclockwise.png'))
+        self.rotateClockwiseButton.setIcon(clockwise_icon)
+        self.rotateCounterclockwiseButton.setIcon(counterclockwise_icon)
 
         self.rotateCounterclockwiseButton.clicked.connect(self.rotate_counterclockwise_button_handler)
         self.rotateClockwiseButton.clicked.connect(self.rotate_clockwise_button_handler)
@@ -150,6 +179,8 @@ class ImageWindow(QMainWindow):
         self.rotate_image(90)
 
     def rotate_image(self, angle):
+        """Вращает против часовой стрелки собственное изображение на заданный угол"""
+
         with PilImage.open(self.info[1]) as img:
             img = img.rotate(angle, expand=True)
             img.save(self.info[1])
@@ -158,9 +189,103 @@ class ImageWindow(QMainWindow):
         self.image_widget.update_image()
 
     def closeEvent(self, event):
-        self.main.update_photo(self.row, self.col)
+        self.main.imageTable.update_image(self.index)
         self.main.update_map()
-      
+
+
+class ImagesTableWidget(QTableWidget):
+    def __init__(self, images_per_row, parent=None):
+        super(ImagesTableWidget, self).__init__(parent)
+        self.parent = parent
+        self.images_per_row = images_per_row
+        self.images = parent.images
+
+        self.cellDoubleClicked.connect(self.open_image_window)
+        self.load_widgets()
+        self.update_photos_layout()
+
+    def load_widgets(self):
+        """Создает виджеты всех изображений из базы данных"""
+
+        self.widgets = []
+        for image_info in self.images.get_images():
+            image_id = image_info[0]
+            image_path = image_info[1]
+            image = ImageWidget(image_id, image_path, (300, 300), self)
+            self.widgets.append(image)
+
+    def update_photos_layout(self):
+        """Загружает виджеты изображений в таблицу"""
+
+        self.clear_photos_layout()
+        rows = len(self.widgets) // self.images_per_row + 1
+        self.setRowCount(rows)
+        self.setColumnCount(self.images_per_row)
+        for col in range(self.images_per_row):
+            self.setColumnWidth(col, 300)
+        for row in range(rows):
+            self.setRowHeight(row, 300)
+        for index, image in enumerate(self.widgets):
+            row = index // self.images_per_row
+            col = index % self.images_per_row
+            print(index, row, col)
+            self.setCellWidget(row, col, image)
+
+    def update_image(self, index):
+        """Обновляет заданное изображение"""
+
+        row = index // self.images_per_row
+        col = index % self.images_per_row
+        self.removeCellWidget(row, col)
+        old_img = self.widgets[index]
+        image_path = self.images.get_image_info(old_img.id)[1]
+        print(f'updating image {old_img.id} with {image_path=}')
+        image = ImageWidget(old_img.id, image_path, (300, 300), self)
+        self.setCellWidget(row, col, image)
+        self.widgets[index] = image
+
+    def clear_photos_layout(self):
+        """Очищает таблицу от всех виджетов"""
+
+        for row in range(self.rowCount()):
+            for col in range(self.columnCount()):
+                self.removeCellWidget(row, col)
+        self.setRowCount(0)
+
+    def open_image_window(self, row, col):
+        """Создает и открывает окно с заданным изображением"""
+
+        index = row * self.images_per_row + col
+        if index >= len(self.widgets):
+            return
+
+        image = self.widgets[index]
+        print(self.parent)
+        image_window = ImageWindow(image.id, index, self.parent)
+        image_window.show()
+        self.parent.image_windows.append(image_window)
+
+    def set_images_per_row(self, images_per_row):
+        """Устанавливает новое количество изображений в одном ряду таблицы"""
+
+        if self.images_per_row != images_per_row:
+            self.images_per_row = images_per_row
+            self.load_widgets()
+            self.update_photos_layout()
+
+    def delete_selected(self):
+        """Удаляет все выбранные изображения"""
+
+        images = []
+        for index in self.selectedIndexes():
+            row, col = index.row(), index.column()
+            index = row * self.images_per_row + col
+            if index < len(self.widgets):
+                images.append(self.widgets[index])
+                self.widgets[index] = None
+
+        return images
+
 
 class MyWidget(QMainWindow):
     def __init__(self):
@@ -168,20 +293,17 @@ class MyWidget(QMainWindow):
         uic.loadUi('main.ui', self)
         self.setMinimumSize(1000, 800)
         self.setWindowTitle('Map Gallery')
-        self.images_per_row = 3
         self.images = Images()
-        self.table_widgets = []# Нужен для доступа к виджету фотографии по колонке и столбцу в таблице
+        self.imageTable = ImagesTableWidget(3, self)
+        self.photosTab.layout().addWidget(self.imageTable)
         self.image_windows = []
         self.map_init()
-        self.update_photos_layout()
 
         self.tabWidget.setTabText(0, 'Карта')
         self.tabWidget.setTabText(1, 'Галерея')
 
-
         self.addPhotosButton.clicked.connect(self.add_photos_button_handler)
         self.deletePhotosButton.clicked.connect(self.delete_photos_button_handler)
-        self.photosTable.cellDoubleClicked.connect(self.open_image_window)
 
     def map_init(self):
         """Инициализирует объект карты"""
@@ -190,8 +312,8 @@ class MyWidget(QMainWindow):
                               location=(55.752900, 37.622107))
         for image_info in self.images.get_images():
             icon, *location = image_info[2:]
-            print(icon, location)
-            self.add_image_marker(icon, location)
+            if location != (None, None):
+                self.add_image_marker(icon, location)
         self.update_map()
 
     def resizeEvent(self, event):
@@ -199,12 +321,7 @@ class MyWidget(QMainWindow):
 
         super().resizeEvent(event)
         self.webview.resize(self.width(), self.height())
-        if self.images_per_row != self.width() // 300:
-            try:
-                self.images_per_row = self.width() // 300
-                self.update_photos_layout()
-            except Exception as err:
-                print(err.__repr__())
+        self.imageTable.set_images_per_row(self.width() // 300)
 
     def add_photos_button_handler(self):
         """Обрабатывает добавление фотографий"""
@@ -213,24 +330,20 @@ class MyWidget(QMainWindow):
         dialog.setFileMode(QFileDialog.ExistingFiles)
         if dialog.exec_():
             file_names = dialog.selectedFiles()
+        if 'file_names' not in locals():
+            return
         for image_path in file_names:
-            try:
-                icon, *location = self.images.add_image(image_path)[2:]
+            icon, *location = self.images.add_image(image_path)[2:]
+            if location != (None, None):
                 self.add_image_marker(icon, location)
-                print(f"image '{image_path}' with location {location.__repr__()} added")
-            except Exception as err:
-                print(err.__repr__())
-        self.update_photos_layout()
+        self.imageTable.load_widgets()
+        self.imageTable.update_photos_layout()
         self.update_map()
 
     def delete_photos_button_handler(self):
         """Обрабатывает удаление фотографий"""
-        images = []
-        for index in self.photosTable.selectedIndexes():
-            row, col = index.row(), index.column()
-            if self.table_widgets[row][col] is not None:
-                images.append(self.table_widgets[row][col])
-                self.table_widgets[row][col] = None
+
+        images = self.imageTable.delete_selected()
 
         if not images:
             self.statusBar().showMessage('Ни одна фотография не выбрана')
@@ -240,20 +353,9 @@ class MyWidget(QMainWindow):
                 self.images.delete_image(image.id)
                 print(f'image {image.id} deleted')
 
-            self.update_photos_layout()
+            self.imageTable.load_widgets()
+            self.imageTable.update_photos_layout()
             self.update_map()
-
-    def open_image_window(self, row, col):
-        if self.table_widgets[row][col] is None:
-            return
-
-        try:
-            image = self.table_widgets[row][col]
-            image_window = ImageWindow(image.id, row, col, self)
-            image_window.show()
-            self.image_windows.append(image_window)
-        except Exception as err:
-            print(err.__repr__())
 
     def add_image_marker(self, image_name, coords):
         """Добавляет маркер с фотографией на карту"""
@@ -273,53 +375,6 @@ class MyWidget(QMainWindow):
         self.webview.setHtml(data.getvalue().decode())
         print('map updated')
         print(self.mapWidget.children())
-
-    def update_photos_layout(self):
-        """Обновляет галлерею во втрой вкладке"""
-
-        self.clear_photos_layout()
-        row, col = -1, 0
-        self.photosTable.setColumnCount(self.images_per_row)
-        for i in range(self.images_per_row):
-            self.photosTable.setColumnWidth(i, 300)
-        self.photosTable.setRowHeight(0, 300)
-        for image_info in self.images.get_images():
-            if col == 0:
-                self.photosTable.setRowCount(self.photosTable.rowCount() + 1)
-                self.table_widgets.append([None] * self.images_per_row)
-                row += 1
-                self.photosTable.setRowHeight(row, 300)
-            image_id = image_info[0]
-            image_path = image_info[1]
-            image = ImageWidget(image_id, image_path, (300, 300), self.photosTable)
-            self.photosTable.setCellWidget(row, col, image)
-            print(self.table_widgets, row, col)
-            self.table_widgets[row][col] = image
-            col = (col + 1) % self.images_per_row
-
-    def update_photo(self, row, col):
-        self.photosTable.removeCellWidget(row, col)
-        old_img = self.table_widgets[row][col]
-        image_path = self.images.get_image_info(old_img.id)[1]
-        print(f'updating image {old_img.id} with {image_path=}')
-        image = ImageWidget(old_img.id, image_path, (300, 300), self.photosTable)
-        self.photosTable.setCellWidget(row, col, image)
-        self.table_widgets[row][col] = image
-
-    def clear_photos_layout(self):
-        self.table_widgets = []
-        for row in range(self.photosTable.rowCount()):
-            for col in range(self.photosTable.columnCount()):
-                self.photosTable.removeCellWidget(row, col)
-        self.photosTable.setRowCount(0)
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_F:
-            print('showing map in browser')
-            self.map.show_in_browser()
-
-        if event.key() == Qt.Key_Delete:
-            self.images.clear()
 
 
 if __name__ == '__main__':
